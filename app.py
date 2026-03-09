@@ -47,9 +47,28 @@ body, .gradio-container { background: #f5f7fb !important; }
   top: 16px;
   align-self: flex-start;
 }
+.left-tabs .tab-nav {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+.left-tabs .tab-nav button {
+  flex: 1 1 auto;
+  min-width: 0 !important;
+  padding: 8px 10px !important;
+}
+.left-tab-body {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+}
 .status-ok { color: #0f766e; font-weight: 700; }
 .status-run { color: #1d4ed8; font-weight: 700; }
 .status-err { color: #b91c1c; font-weight: 700; }
+.results-tabs .tabitem {
+  padding-top: 10px !important;
+}
 .results-pane .prose h1,
 .results-pane .prose h2,
 .results-pane .prose h3,
@@ -57,6 +76,12 @@ body, .gradio-container { background: #f5f7fb !important; }
 .results-pane .prose h5,
 .results-pane .prose h6 { border-bottom: none !important; padding-bottom: 0 !important; }
 .results-pane .prose hr { display: none !important; }
+.result-markdown {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px 14px !important;
+}
 .agent-io-wrap { display: grid; gap: 12px; }
 .agent-io-card {
   border: 1px solid #dbe4f0;
@@ -175,12 +200,13 @@ def _trace_md(steps: list[str]) -> str:
 
 
 def _live_status_md(steps: list[str]) -> str:
-    lines = [f"- Steps completed: **{len(steps)}**"]
+    lines = ["### Live Status", f"- Steps completed: **{len(steps)}**"]
     if steps:
         lines.append(f"- Latest update: **{steps[-1]}**")
-        lines.append("- Recent updates:")
-        for item in steps[-6:]:
-            lines.append(f"  - {item}")
+        lines.append("")
+        lines.append("### Recent Updates")
+        for idx, item in enumerate(steps[-6:], start=1):
+            lines.append(f"{idx}. {item}")
     else:
         lines.append("- Latest update: waiting...")
     return "\n".join(lines)
@@ -209,10 +235,11 @@ def _clean_markdown(text: str) -> str:
         if stripped in {"---", "***", "___"}:
             continue
 
+        current = current.replace("•", "- ").replace("◦", "- ")
         current = re.sub(r"^(#{1,6})(\S)", r"\1 \2", current)
 
         # Split malformed in-line bullets into separate bullets.
-        if stripped.startswith("* ") and " * " in stripped:
+        if " * " in stripped:
             for part in stripped.split(" * "):
                 part = part.strip()
                 if not part:
@@ -223,6 +250,8 @@ def _clean_markdown(text: str) -> str:
         fixed.append(current)
 
     cleaned = "\n".join(fixed)
+    cleaned = re.sub(r"([.!?])\s+\*\s+", r"\1\n* ", cleaned)
+    cleaned = re.sub(r"\n[-*]\s+\*\*", "\n* **", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip() or "-"
 
@@ -279,7 +308,7 @@ def _error_outputs(message: str) -> tuple[Any, ...]:
     return (
         f'<span class="status-err">{message}</span>',
         gr.Tabs(selected=TAB_LIVE),
-        "- Workflow failed before start.",
+        "### Live Status\n- Workflow failed before start.",
         "-",
         _agent_io_html([]),
         "-",
@@ -328,7 +357,7 @@ def run_orchestration_stream(
     key = (api_key or "").strip()
     user_task = (task or "").strip()
     if not key:
-        yield _error_outputs("Please enter your Gemini API key in the API Config tab.")
+        yield _error_outputs("Please enter your Gemini API key in the Task tab.")
         return
     if not user_task:
         yield _error_outputs("Please enter a task before running.")
@@ -369,12 +398,12 @@ def run_orchestration_stream(
         '<span class="status-run">Starting workflow...</span>',
         gr.Tabs(selected=TAB_LIVE),
         _live_status_md(live_steps),
+        "Planning in progress...",
         _trace_md(live_steps),
         _agent_io_html([]),
+        "Running...",
+        "Running...",
         architecture_preview,
-        "Planning in progress...",
-        "Running...",
-        "Running...",
     )
 
     events: queue.Queue = queue.Queue()
@@ -417,12 +446,12 @@ def run_orchestration_stream(
                 f'<span class="status-run">Running: {payload}</span>',
                 gr.Tabs(selected=TAB_LIVE),
                 _live_status_md(live_steps),
+                "Planning/execution in progress...",
                 _trace_md(live_steps),
                 _agent_io_html([]),
+                "Running...",
+                "Running...",
                 architecture_preview,
-                "Planning/execution in progress...",
-                "Running...",
-                "Running...",
             )
         elif kind == "done":
             done = True
@@ -432,12 +461,12 @@ def run_orchestration_stream(
             f'<span class="status-err">Workflow failed: {error_ref["value"]}</span>',
             gr.Tabs(selected=TAB_LIVE),
             _live_status_md(live_steps),
+            "Could not complete planning.",
             _trace_md(live_steps),
             _agent_io_html([]),
-            architecture_preview,
-            "Could not complete planning.",
             "No sources captured.",
             "No final answer generated.",
+            architecture_preview,
         )
         return
 
@@ -446,12 +475,12 @@ def run_orchestration_stream(
         '<span class="status-ok">Workflow completed successfully.</span>',
         gr.Tabs(selected=TAB_FINAL),
         _live_status_md(live_steps),
+        _clean_markdown(result.agent_plan),
         _clean_markdown(result.execution_trace),
         _agent_io_html(result.agent_io),
-        _clean_markdown(result.architecture_summary),
-        _clean_markdown(result.agent_plan),
         _clean_markdown(result.sources_used),
         _clean_markdown(result.final_answer),
+        _clean_markdown(result.architecture_summary),
     )
 
 
@@ -462,24 +491,23 @@ def build_demo() -> gr.Blocks:
             gr.Markdown(f"# {APP_TITLE}\n{APP_DESCRIPTION}")
 
             with gr.Row(equal_height=False):
-                with gr.Column(scale=1, min_width=420, elem_classes="mao-panel", elem_id="left-panel"):
-                    with gr.Tabs():
-                        with gr.Tab("Task & Run"):
-                            with gr.Accordion("Task", open=True):
+                with gr.Column(scale=1, min_width=480, elem_classes="mao-panel", elem_id="left-panel"):
+                    with gr.Tabs(elem_classes=["left-tabs"]):
+                        with gr.Tab("Task"):
+                            with gr.Group(elem_classes=["left-tab-body"]):
+                                api_key = gr.Textbox(label="Gemini API Key", type="password", placeholder="Paste API key")
+                                gr.Markdown("- API key is used only for the current run.\n- It is not stored or logged.")
+                                model = gr.Dropdown(label="Model", choices=[MODEL_ID], value=MODEL_ID, interactive=False)
                                 task = gr.Textbox(
                                     label="Task Input",
                                     lines=6,
                                     placeholder="Example: Explain the EU AI Act and its impact on startups.",
                                 )
                                 gr.Examples(examples=[[item] for item in EXAMPLE_TASKS], inputs=[task], label="Example Tasks")
-
-                            with gr.Accordion("Model", open=True):
-                                model = gr.Dropdown(label="Model", choices=[MODEL_ID], value=MODEL_ID, interactive=False)
-
-                            run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
+                                run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
 
                         with gr.Tab("Main Agent"):
-                            with gr.Accordion("Main Agent Configuration", open=True):
+                            with gr.Group(elem_classes=["left-tab-body"]):
                                 main_name = gr.Textbox(label="Agent Name", value="Coordinator")
                                 main_role = gr.Textbox(label="Agent Role", value="Task planner")
                                 main_instruction = gr.Textbox(
@@ -489,85 +517,88 @@ def build_demo() -> gr.Blocks:
                                 )
 
                         with gr.Tab("Sub-Agents"):
-                            with gr.Accordion("Sub-agent 1", open=True):
-                                sub1_enabled = gr.Checkbox(label="Enable", value=True)
-                                sub1_name = gr.Textbox(label="Name", value="Researcher")
-                                sub1_spec = gr.Textbox(label="Specialization", value="information gathering")
-                                sub1_instruction = gr.Textbox(
-                                    label="Instruction",
-                                    lines=3,
-                                    value="Search and summarize factual information.",
-                                )
-                            with gr.Accordion("Sub-agent 2", open=False):
-                                sub2_enabled = gr.Checkbox(label="Enable", value=True)
-                                sub2_name = gr.Textbox(label="Name", value="Writer")
-                                sub2_spec = gr.Textbox(label="Specialization", value="writing and synthesis")
-                                sub2_instruction = gr.Textbox(
-                                    label="Instruction",
-                                    lines=3,
-                                    value="Draft clear and structured responses from findings.",
-                                )
-                            with gr.Accordion("Sub-agent 3", open=False):
-                                sub3_enabled = gr.Checkbox(label="Enable", value=False)
-                                sub3_name = gr.Textbox(label="Name", value="Critic")
-                                sub3_spec = gr.Textbox(label="Specialization", value="quality review")
-                                sub3_instruction = gr.Textbox(
-                                    label="Instruction",
-                                    lines=3,
-                                    value="Review responses for clarity, accuracy, and completeness.",
-                                )
+                            with gr.Tabs():
+                                with gr.Tab("Sub-agent 1"):
+                                    with gr.Group(elem_classes=["left-tab-body"]):
+                                        sub1_enabled = gr.Checkbox(label="Enable", value=True)
+                                        sub1_name = gr.Textbox(label="Name", value="Researcher")
+                                        sub1_spec = gr.Textbox(label="Specialization", value="information gathering")
+                                        sub1_instruction = gr.Textbox(
+                                            label="Instruction",
+                                            lines=3,
+                                            value="Search and summarize factual information.",
+                                        )
+                                with gr.Tab("Sub-agent 2"):
+                                    with gr.Group(elem_classes=["left-tab-body"]):
+                                        sub2_enabled = gr.Checkbox(label="Enable", value=True)
+                                        sub2_name = gr.Textbox(label="Name", value="Writer")
+                                        sub2_spec = gr.Textbox(label="Specialization", value="writing and synthesis")
+                                        sub2_instruction = gr.Textbox(
+                                            label="Instruction",
+                                            lines=3,
+                                            value="Draft clear and structured responses from findings.",
+                                        )
+                                with gr.Tab("Sub-agent 3"):
+                                    with gr.Group(elem_classes=["left-tab-body"]):
+                                        sub3_enabled = gr.Checkbox(label="Enable", value=False)
+                                        sub3_name = gr.Textbox(label="Name", value="Critic")
+                                        sub3_spec = gr.Textbox(label="Specialization", value="quality review")
+                                        sub3_instruction = gr.Textbox(
+                                            label="Instruction",
+                                            lines=3,
+                                            value="Review responses for clarity, accuracy, and completeness.",
+                                        )
 
                         with gr.Tab("Tools"):
-                            slot_labels = [label for label, _ in AGENT_SLOT_CHOICES]
-                            with gr.Accordion(AVAILABLE_TOOLS[0]["name"], open=False):
-                                tool1_enabled = gr.Checkbox(label="Enable", value=True)
-                                tool1_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[0]["name"])
-                                tool1_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 1"])
-                            with gr.Accordion(AVAILABLE_TOOLS[1]["name"], open=False):
-                                tool2_enabled = gr.Checkbox(label="Enable", value=True)
-                                tool2_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[1]["name"])
-                                tool2_assigned = gr.CheckboxGroup(
-                                    label="Assign To",
-                                    choices=slot_labels,
-                                    value=["Sub-agent 1", "Sub-agent 2"],
-                                )
-                            with gr.Accordion(AVAILABLE_TOOLS[2]["name"], open=False):
-                                tool3_enabled = gr.Checkbox(label="Enable", value=False)
-                                tool3_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[2]["name"])
-                                tool3_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
-                            with gr.Accordion(AVAILABLE_TOOLS[3]["name"], open=False):
-                                tool4_enabled = gr.Checkbox(label="Enable", value=False)
-                                tool4_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[3]["name"])
-                                tool4_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
-                            with gr.Accordion(AVAILABLE_TOOLS[4]["name"], open=False):
-                                tool5_enabled = gr.Checkbox(label="Enable", value=False)
-                                tool5_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[4]["name"])
-                                tool5_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Main Agent"])
-
-                        with gr.Tab("API Config"):
-                            with gr.Accordion("Gemini API Key", open=True):
-                                api_key = gr.Textbox(label="Gemini API Key", type="password", placeholder="Paste API key")
-                                gr.Markdown("- API key is used only for the current run.\n- It is not stored or logged.")
+                            with gr.Group(elem_classes=["left-tab-body"]):
+                                slot_labels = [label for label, _ in AGENT_SLOT_CHOICES]
+                                with gr.Accordion(AVAILABLE_TOOLS[0]["name"], open=True):
+                                    tool1_enabled = gr.Checkbox(label="Enable", value=True)
+                                    tool1_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[0]["name"])
+                                    tool1_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 1"])
+                                with gr.Accordion(AVAILABLE_TOOLS[1]["name"], open=False):
+                                    tool2_enabled = gr.Checkbox(label="Enable", value=True)
+                                    tool2_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[1]["name"])
+                                    tool2_assigned = gr.CheckboxGroup(
+                                        label="Assign To",
+                                        choices=slot_labels,
+                                        value=["Sub-agent 1", "Sub-agent 2"],
+                                    )
+                                with gr.Accordion(AVAILABLE_TOOLS[2]["name"], open=False):
+                                    tool3_enabled = gr.Checkbox(label="Enable", value=False)
+                                    tool3_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[2]["name"])
+                                    tool3_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
+                                with gr.Accordion(AVAILABLE_TOOLS[3]["name"], open=False):
+                                    tool4_enabled = gr.Checkbox(label="Enable", value=False)
+                                    tool4_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[3]["name"])
+                                    tool4_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
+                                with gr.Accordion(AVAILABLE_TOOLS[4]["name"], open=False):
+                                    tool5_enabled = gr.Checkbox(label="Enable", value=False)
+                                    tool5_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[4]["name"])
+                                    tool5_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Main Agent"])
 
                 with gr.Column(scale=2, min_width=560, elem_classes="mao-panel"):
                     gr.Markdown("## Results")
                     status = gr.HTML('<span class="status-run">Idle. Configure workflow and run.</span>')
 
-                    with gr.Tabs(selected=TAB_LIVE) as results_tabs:
+                    with gr.Tabs(selected=TAB_LIVE, elem_classes=["results-tabs"]) as results_tabs:
                         with gr.Tab("Live Progress", id=TAB_LIVE):
-                            live_status = gr.Markdown("- Waiting for workflow start.", elem_classes=["results-pane"])
+                            live_status = gr.Markdown(
+                                "### Live Status\n- Waiting for workflow start.",
+                                elem_classes=["results-pane", "result-markdown"],
+                            )
+                        with gr.Tab("Plan", id=TAB_PLAN):
+                            plan = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
                         with gr.Tab("Execution Trace", id=TAB_TRACE):
-                            trace = gr.Markdown("- Waiting for execution.", elem_classes=["results-pane"])
+                            trace = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
                         with gr.Tab("Agent I/O", id=TAB_IO):
                             agent_io_view = gr.HTML(_agent_io_html([]))
-                        with gr.Tab("Architecture", id=TAB_ARCH):
-                            architecture = gr.Markdown("-", elem_classes=["results-pane"])
-                        with gr.Tab("Plan", id=TAB_PLAN):
-                            plan = gr.Markdown("-", elem_classes=["results-pane"])
                         with gr.Tab("Sources", id=TAB_SOURCES):
-                            sources = gr.Markdown("-", elem_classes=["results-pane"])
+                            sources = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
                         with gr.Tab("Final Answer", id=TAB_FINAL):
-                            final_answer = gr.Markdown("-", elem_classes=["results-pane"])
+                            final_answer = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
+                        with gr.Tab("Architecture", id=TAB_ARCH):
+                            architecture = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
 
             run_button.click(
                 fn=run_orchestration_stream,
@@ -610,12 +641,12 @@ def build_demo() -> gr.Blocks:
                     status,
                     results_tabs,
                     live_status,
+                    plan,
                     trace,
                     agent_io_view,
-                    architecture,
-                    plan,
                     sources,
                     final_answer,
+                    architecture,
                 ],
             )
 
