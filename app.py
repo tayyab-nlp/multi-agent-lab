@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import queue
 import re
@@ -24,6 +25,14 @@ from src.tool_builder import ToolConfig, create_tools
 
 LEFT_LABEL_TO_SLOT = {label: slot for label, slot in AGENT_SLOT_CHOICES}
 
+TAB_LIVE = "live"
+TAB_TRACE = "trace"
+TAB_IO = "agent-io"
+TAB_ARCH = "arch"
+TAB_PLAN = "plan"
+TAB_SOURCES = "sources"
+TAB_FINAL = "final"
+
 APP_CSS = """
 body, .gradio-container { background: #f5f7fb !important; }
 .mao-shell { max-width: 1400px; margin: 0 auto; }
@@ -41,8 +50,42 @@ body, .gradio-container { background: #f5f7fb !important; }
 .status-ok { color: #0f766e; font-weight: 700; }
 .status-run { color: #1d4ed8; font-weight: 700; }
 .status-err { color: #b91c1c; font-weight: 700; }
-@media (max-width: 980px) {
+.results-pane .prose h1,
+.results-pane .prose h2,
+.results-pane .prose h3,
+.results-pane .prose h4,
+.results-pane .prose h5,
+.results-pane .prose h6 { border-bottom: none !important; padding-bottom: 0 !important; }
+.results-pane .prose hr { display: none !important; }
+.agent-io-wrap { display: grid; gap: 12px; }
+.agent-io-card {
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #fbfdff;
+  padding: 12px;
+}
+.agent-io-title { font-weight: 700; margin-bottom: 6px; }
+.agent-io-meta { color: #475569; font-size: 13px; margin-bottom: 8px; }
+.agent-io-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.agent-io-block {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 10px;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+}
+.agent-io-label { font-weight: 700; margin-bottom: 6px; }
+@media (max-width: 1100px) {
   #left-panel { position: static; }
+}
+@media (max-width: 860px) {
+  .agent-io-grid { grid-template-columns: 1fr; }
 }
 """
 
@@ -104,51 +147,57 @@ def _make_tool_rows(
 
 def _architecture_preview(main_agent: AgentProfile, sub_agents: list[AgentProfile], tools: list[ToolConfig]) -> str:
     lines = [
-        "### Agent Architecture",
-        f"- **Main Agent:** {main_agent.name} ({main_agent.role})",
+        f"- Main Agent: **{main_agent.name}** ({main_agent.role})",
     ]
     if sub_agents:
-        lines.append("- **Sub-Agents:**")
+        lines.append("- Sub-Agents:")
         for agent in sub_agents:
             lines.append(f"  - {agent.name} | {agent.specialization}")
     else:
-        lines.append("- **Sub-Agents:** None")
+        lines.append("- Sub-Agents: None")
+
     if tools:
-        lines.append("- **Tools:**")
+        lines.append("- Enabled Tools:")
         for tool in tools:
             lines.append(f"  - {tool.name} -> {', '.join(tool.assigned_agent_ids)}")
     else:
-        lines.append("- **Tools:** None")
+        lines.append("- Enabled Tools: None")
     return "\n".join(lines)
 
 
 def _trace_md(steps: list[str]) -> str:
-    lines = ["### Execution Trace"]
     if not steps:
-        lines.append("- Waiting for workflow start.")
-    else:
-        for idx, step in enumerate(steps, start=1):
-            lines.append(f"{idx}. {step}")
+        return "- Waiting for workflow start."
+    lines = []
+    for idx, step in enumerate(steps, start=1):
+        lines.append(f"{idx}. {step}")
     return "\n".join(lines)
 
 
 def _live_status_md(steps: list[str]) -> str:
-    lines = ["### Live Status", f"- Steps completed: **{len(steps)}**"]
+    lines = [f"- Steps completed: **{len(steps)}**"]
     if steps:
         lines.append(f"- Latest update: **{steps[-1]}**")
+        lines.append("- Recent updates:")
+        for item in steps[-6:]:
+            lines.append(f"  - {item}")
     else:
         lines.append("- Latest update: waiting...")
-    if steps:
-        lines.append("")
-        lines.append("#### Recent updates")
-        for item in steps[-6:]:
-            lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
+def _drop_title_line(text: str) -> str:
+    lines = (text or "").splitlines()
+    while lines and lines[0].strip().startswith("#"):
+        lines.pop(0)
+    while lines and not lines[0].strip():
+        lines.pop(0)
     return "\n".join(lines)
 
 
 def _clean_markdown(text: str) -> str:
     """Normalize markdown from model output for cleaner rendering."""
-    raw = (text or "").replace("\r\n", "\n").strip()
+    raw = _drop_title_line((text or "").replace("\r\n", "\n")).strip()
     if not raw:
         return "-"
 
@@ -162,15 +211,13 @@ def _clean_markdown(text: str) -> str:
 
         current = re.sub(r"^(#{1,6})(\S)", r"\1 \2", current)
 
+        # Split malformed in-line bullets into separate bullets.
         if stripped.startswith("* ") and " * " in stripped:
             for part in stripped.split(" * "):
                 part = part.strip()
                 if not part:
                     continue
-                if not part.startswith("*"):
-                    fixed.append(f"* {part}")
-                else:
-                    fixed.append(part)
+                fixed.append(part if part.startswith("*") else f"* {part}")
             continue
 
         fixed.append(current)
@@ -180,15 +227,65 @@ def _clean_markdown(text: str) -> str:
     return cleaned.strip() or "-"
 
 
-def _error_outputs(message: str) -> tuple[str, str, str, str, str, str, str]:
+def _format_block_html(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "<em>None</em>"
+    return html.escape(cleaned).replace("\n", "<br>")
+
+
+def _agent_io_html(agent_io: list[dict[str, Any]] | None) -> str:
+    if not agent_io:
+        return "<div class='agent-io-card'>Agent input/output will appear after sub-agents complete their steps.</div>"
+
+    cards: list[str] = ["<div class='agent-io-wrap'>"]
+    for idx, item in enumerate(agent_io, start=1):
+        agent = html.escape(str(item.get("agent", "Agent")))
+        subtask = html.escape(str(item.get("subtask", "Untitled subtask")))
+        tools = item.get("tools") or []
+        tools_text = html.escape(", ".join(str(tool) for tool in tools)) if tools else "None"
+        input_html = _format_block_html(str(item.get("input", "")))
+        output_html = _format_block_html(str(item.get("output", "")))
+        cards.append(
+            """
+            <div class='agent-io-card'>
+              <div class='agent-io-title'>Step {idx}: {agent}</div>
+              <div class='agent-io-meta'>Subtask: {subtask}<br>Tools: {tools_text}</div>
+              <div class='agent-io-grid'>
+                <div class='agent-io-block'>
+                  <div class='agent-io-label'>Agent Input</div>
+                  {input_html}
+                </div>
+                <div class='agent-io-block'>
+                  <div class='agent-io-label'>Agent Output</div>
+                  {output_html}
+                </div>
+              </div>
+            </div>
+            """.format(
+                idx=idx,
+                agent=agent,
+                subtask=subtask,
+                tools_text=tools_text,
+                input_html=input_html,
+                output_html=output_html,
+            )
+        )
+    cards.append("</div>")
+    return "\n".join(cards)
+
+
+def _error_outputs(message: str) -> tuple[Any, ...]:
     return (
         f'<span class="status-err">{message}</span>',
-        "### Live Status\n- Workflow failed before start.",
-        "### Agent Architecture\n-",
-        "### Agent Plan\n-",
-        "### Execution Trace\n-",
-        "### Sources Used\n-",
-        "### Final Answer\n-",
+        gr.Tabs(selected=TAB_LIVE),
+        "- Workflow failed before start.",
+        "-",
+        _agent_io_html([]),
+        "-",
+        "-",
+        "-",
+        "-",
     )
 
 
@@ -231,7 +328,7 @@ def run_orchestration_stream(
     key = (api_key or "").strip()
     user_task = (task or "").strip()
     if not key:
-        yield _error_outputs("Please enter your Gemini API key.")
+        yield _error_outputs("Please enter your Gemini API key in the API Config tab.")
         return
     if not user_task:
         yield _error_outputs("Please enter a task before running.")
@@ -270,12 +367,14 @@ def run_orchestration_stream(
     live_steps: list[str] = []
     yield (
         '<span class="status-run">Starting workflow...</span>',
+        gr.Tabs(selected=TAB_LIVE),
         _live_status_md(live_steps),
-        architecture_preview,
-        "### Agent Plan\n- Planning in progress...",
         _trace_md(live_steps),
-        "### Sources Used\n- Running...",
-        "### Final Answer\n- Running...",
+        _agent_io_html([]),
+        architecture_preview,
+        "Planning in progress...",
+        "Running...",
+        "Running...",
     )
 
     events: queue.Queue = queue.Queue()
@@ -316,12 +415,14 @@ def run_orchestration_stream(
             live_steps.append(payload)
             yield (
                 f'<span class="status-run">Running: {payload}</span>',
+                gr.Tabs(selected=TAB_LIVE),
                 _live_status_md(live_steps),
-                architecture_preview,
-                "### Agent Plan\n- Planning/execution in progress...",
                 _trace_md(live_steps),
-                "### Sources Used\n- Running...",
-                "### Final Answer\n- Running...",
+                _agent_io_html([]),
+                architecture_preview,
+                "Planning/execution in progress...",
+                "Running...",
+                "Running...",
             )
         elif kind == "done":
             done = True
@@ -329,22 +430,26 @@ def run_orchestration_stream(
     if "value" in error_ref:
         yield (
             f'<span class="status-err">Workflow failed: {error_ref["value"]}</span>',
+            gr.Tabs(selected=TAB_LIVE),
             _live_status_md(live_steps),
-            architecture_preview,
-            "### Agent Plan\n- Could not complete planning.",
             _trace_md(live_steps),
-            "### Sources Used\n- No sources captured.",
-            "### Final Answer\n- No final answer generated.",
+            _agent_io_html([]),
+            architecture_preview,
+            "Could not complete planning.",
+            "No sources captured.",
+            "No final answer generated.",
         )
         return
 
     result = result_ref["value"]
     yield (
         '<span class="status-ok">Workflow completed successfully.</span>',
+        gr.Tabs(selected=TAB_FINAL),
         _live_status_md(live_steps),
+        _clean_markdown(result.execution_trace),
+        _agent_io_html(result.agent_io),
         _clean_markdown(result.architecture_summary),
         _clean_markdown(result.agent_plan),
-        _clean_markdown(result.execution_trace),
         _clean_markdown(result.sources_used),
         _clean_markdown(result.final_answer),
     )
@@ -359,20 +464,7 @@ def build_demo() -> gr.Blocks:
             with gr.Row(equal_height=False):
                 with gr.Column(scale=1, min_width=420, elem_classes="mao-panel", elem_id="left-panel"):
                     with gr.Tabs():
-                        with gr.Tab("Workflow"):
-                            with gr.Accordion("LLM Configuration", open=True):
-                                api_key = gr.Textbox(label="Gemini API Key", type="password", placeholder="Paste API key")
-                                model = gr.Dropdown(label="Model", choices=[MODEL_ID], value=MODEL_ID, interactive=False)
-
-                            with gr.Accordion("Main Agent", open=True):
-                                main_name = gr.Textbox(label="Agent Name", value="Coordinator")
-                                main_role = gr.Textbox(label="Agent Role", value="Task planner")
-                                main_instruction = gr.Textbox(
-                                    label="Agent Instruction",
-                                    lines=3,
-                                    value="Break tasks into subtasks and delegate them to the best sub-agent.",
-                                )
-
+                        with gr.Tab("Task & Run"):
                             with gr.Accordion("Task", open=True):
                                 task = gr.Textbox(
                                     label="Task Input",
@@ -381,7 +473,20 @@ def build_demo() -> gr.Blocks:
                                 )
                                 gr.Examples(examples=[[item] for item in EXAMPLE_TASKS], inputs=[task], label="Example Tasks")
 
+                            with gr.Accordion("Model", open=True):
+                                model = gr.Dropdown(label="Model", choices=[MODEL_ID], value=MODEL_ID, interactive=False)
+
                             run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
+
+                        with gr.Tab("Main Agent"):
+                            with gr.Accordion("Main Agent Configuration", open=True):
+                                main_name = gr.Textbox(label="Agent Name", value="Coordinator")
+                                main_role = gr.Textbox(label="Agent Role", value="Task planner")
+                                main_instruction = gr.Textbox(
+                                    label="Agent Instruction",
+                                    lines=3,
+                                    value="Break tasks into subtasks and delegate them to the best sub-agent.",
+                                )
 
                         with gr.Tab("Sub-Agents"):
                             with gr.Accordion("Sub-agent 1", open=True):
@@ -439,27 +544,30 @@ def build_demo() -> gr.Blocks:
                                 tool5_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[4]["name"])
                                 tool5_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Main Agent"])
 
+                        with gr.Tab("API Config"):
+                            with gr.Accordion("Gemini API Key", open=True):
+                                api_key = gr.Textbox(label="Gemini API Key", type="password", placeholder="Paste API key")
+                                gr.Markdown("- API key is used only for the current run.\n- It is not stored or logged.")
+
                 with gr.Column(scale=2, min_width=560, elem_classes="mao-panel"):
                     gr.Markdown("## Results")
                     status = gr.HTML('<span class="status-run">Idle. Configure workflow and run.</span>')
 
-                    with gr.Accordion("Live Progress", open=True):
-                        live_status = gr.Markdown("### Live Status\n- Waiting for workflow start.")
-
-                    with gr.Accordion("Execution Trace", open=True):
-                        trace = gr.Markdown("### Execution Trace\n- Waiting for execution.")
-
-                    with gr.Accordion("Agent Architecture", open=False):
-                        architecture = gr.Markdown("### Agent Architecture\n-")
-
-                    with gr.Accordion("Agent Plan", open=False):
-                        plan = gr.Markdown("### Agent Plan\n-")
-
-                    with gr.Accordion("Sources Used", open=False):
-                        sources = gr.Markdown("### Sources Used\n-")
-
-                    with gr.Accordion("Final Answer", open=True):
-                        final_answer = gr.Markdown("### Final Answer\n-")
+                    with gr.Tabs(selected=TAB_LIVE) as results_tabs:
+                        with gr.Tab("Live Progress", id=TAB_LIVE):
+                            live_status = gr.Markdown("- Waiting for workflow start.", elem_classes=["results-pane"])
+                        with gr.Tab("Execution Trace", id=TAB_TRACE):
+                            trace = gr.Markdown("- Waiting for execution.", elem_classes=["results-pane"])
+                        with gr.Tab("Agent I/O", id=TAB_IO):
+                            agent_io_view = gr.HTML(_agent_io_html([]))
+                        with gr.Tab("Architecture", id=TAB_ARCH):
+                            architecture = gr.Markdown("-", elem_classes=["results-pane"])
+                        with gr.Tab("Plan", id=TAB_PLAN):
+                            plan = gr.Markdown("-", elem_classes=["results-pane"])
+                        with gr.Tab("Sources", id=TAB_SOURCES):
+                            sources = gr.Markdown("-", elem_classes=["results-pane"])
+                        with gr.Tab("Final Answer", id=TAB_FINAL):
+                            final_answer = gr.Markdown("-", elem_classes=["results-pane"])
 
             run_button.click(
                 fn=run_orchestration_stream,
@@ -498,7 +606,17 @@ def build_demo() -> gr.Blocks:
                     tool5_name,
                     tool5_assigned,
                 ],
-                outputs=[status, live_status, architecture, plan, trace, sources, final_answer],
+                outputs=[
+                    status,
+                    results_tabs,
+                    live_status,
+                    trace,
+                    agent_io_view,
+                    architecture,
+                    plan,
+                    sources,
+                    final_answer,
+                ],
             )
 
     return demo

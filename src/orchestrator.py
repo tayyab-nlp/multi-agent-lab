@@ -23,6 +23,7 @@ class WorkflowResult:
     execution_trace: str
     sources_used: str
     final_answer: str
+    agent_io: list[dict[str, Any]]
 
 
 ProgressCallback = Callable[[str], None]
@@ -162,6 +163,7 @@ def run_workflow(
     trace: list[str] = []
     collected_sources: list[str] = []
     subtask_outputs: list[dict[str, str]] = []
+    agent_io: list[dict[str, Any]] = []
 
     architecture = _format_architecture(main_agent, sub_agents, tools)
     _emit(trace, f"{main_agent.name} received task.", progress_callback)
@@ -209,6 +211,7 @@ def run_workflow(
         _emit(trace, f"Delegated '{title}' to {assignee.name}.", progress_callback)
 
         assigned_tools = [tool for tool in tools if assignee.agent_id in tool.assigned_agent_ids]
+        used_tool_names = [tool.name for tool in assigned_tools]
         tool_context_parts: list[str] = []
         if assigned_tools:
             for tool in assigned_tools:
@@ -234,6 +237,15 @@ def run_workflow(
 
         result_text = client.generate_text(agent_system, agent_user)
         subtask_outputs.append({"agent": assignee.name, "subtask": title, "result": result_text})
+        agent_io.append(
+            {
+                "agent": assignee.name,
+                "subtask": title,
+                "tools": used_tool_names,
+                "input": f"Subtask:\n{title}\n\nTool context:\n{tool_context}",
+                "output": result_text,
+            }
+        )
         _emit(trace, f"{assignee.name} completed subtask.", progress_callback)
 
     synthesis_system = (
@@ -266,4 +278,5 @@ def run_workflow(
         execution_trace=_format_trace(trace),
         sources_used="\n".join(source_lines),
         final_answer=final_answer,
+        agent_io=agent_io,
     )
