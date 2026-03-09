@@ -68,15 +68,34 @@ body, .gradio-container { background: #ffffff !important; }
   background: #ffffff;
   padding: 10px;
 }
+.left-tab-body .prose,
+.left-tab-body .prose p,
+.left-tab-body .prose li,
+.left-tab-body .markdown {
+  background: transparent !important;
+}
 .left-tab-body .examples,
 .left-tab-body .examples .table-wrap,
-.left-tab-body .examples table {
+.left-tab-body .examples table,
+.left-tab-body .examples table tr,
+.left-tab-body .examples table td,
+.left-tab-body .examples table th {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
 }
 .left-tab-body .examples {
   padding: 0 !important;
+}
+.left-tab-body details,
+.left-tab-body .accordion {
+  border: 1px solid #dbe4f0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+.left-tab-body details > summary,
+.left-tab-body .accordion summary {
+  border-bottom: 1px solid #e2e8f0 !important;
 }
 .status-ok { color: #0f766e; font-weight: 700; }
 .status-run { color: #1d4ed8; font-weight: 700; }
@@ -216,15 +235,27 @@ def _clean_markdown(text: str) -> str:
         return "-"
 
     fixed: list[str] = []
+    in_code_block = False
     for line in raw.split("\n"):
-        current = line.rstrip()
+        current = line.rstrip("\n")
+        if current.strip().startswith("```"):
+            in_code_block = not in_code_block
+            fixed.append(current.strip())
+            continue
+
+        if in_code_block:
+            fixed.append(current.rstrip())
+            continue
+
+        current = current.strip()
         stripped = current.strip()
 
         if stripped in {"---", "***", "___"}:
             continue
 
-        current = current.replace("•", "- ").replace("◦", "- ")
-        current = re.sub(r"^(#{1,6})(\S)", r"\1 \2", current)
+        current = current.replace("•", "- ").replace("◦", "- ").replace("○", "- ").replace("●", "- ")
+        current = re.sub(r"^\s*[oO]\s+", "- ", current)
+        current = re.sub(r"^\s*(#{1,6})\s*(.+)$", r"\1 \2", current)
 
         # Split malformed in-line bullets into separate bullets.
         if " * " in stripped:
@@ -237,9 +268,16 @@ def _clean_markdown(text: str) -> str:
 
         fixed.append(current)
 
-    cleaned = "\n".join(fixed)
+    padded: list[str] = []
+    for line in fixed:
+        if re.match(r"^#{1,6}\s", line) and padded and padded[-1].strip():
+            padded.append("")
+        padded.append(line)
+
+    cleaned = "\n".join(padded)
     cleaned = re.sub(r"([.!?])\s+\*\s+", r"\1\n* ", cleaned)
     cleaned = re.sub(r"\n[-*]\s+\*\*", "\n* **", cleaned)
+    cleaned = re.sub(r"\s+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip() or "-"
 
@@ -474,7 +512,11 @@ def build_demo() -> gr.Blocks:
     """Create Gradio interface."""
     with gr.Blocks(title=APP_TITLE) as demo:
         with gr.Column(elem_classes="mao-shell"):
-            gr.Markdown(f"# {APP_TITLE}\n{APP_DESCRIPTION}")
+            gr.Markdown(
+                f"# {APP_TITLE}\n"
+                f"{APP_DESCRIPTION}\n\n"
+                "[GitHub Repository](https://github.com/tayyab-nlp/multi-agent-lab)"
+            )
 
             with gr.Row(equal_height=False):
                 with gr.Column(scale=1, min_width=420, elem_classes="mao-panel", elem_id="left-panel"):
