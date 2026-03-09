@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from src.config import AVAILABLE_TOOLS
 
 
-def _clean(value: str, fallback: str) -> str:
-    text = (value or "").strip()
+def _clean(value: Any, fallback: str) -> str:
+    """Normalize UI values into plain text safely."""
+    if value is None:
+        return fallback
+    if isinstance(value, list):
+        text = "\n".join(str(item) for item in value if item is not None).strip()
+    elif isinstance(value, dict):
+        text = str(value).strip()
+    else:
+        text = str(value).strip()
     return text if text else fallback
 
 

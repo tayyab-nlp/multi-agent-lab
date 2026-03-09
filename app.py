@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import threading
 from typing import Any
 
@@ -25,25 +26,29 @@ LEFT_LABEL_TO_SLOT = {label: slot for label, slot in AGENT_SLOT_CHOICES}
 
 APP_CSS = """
 body, .gradio-container { background: #f5f7fb !important; }
-.mao-shell { max-width: 1380px; margin: 0 auto; }
-.mao-card {
+.mao-shell { max-width: 1400px; margin: 0 auto; }
+.mao-panel {
   border: 1px solid #dbe4f0;
   border-radius: 14px;
   background: #fff;
   padding: 14px;
 }
-#agent-row { display: flex; flex-wrap: wrap; gap: 12px; }
-#agent-row > div { flex: 1 1 260px; min-width: 260px; }
-#config-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
-#config-row > div { flex: 1 1 320px; min-width: 320px; }
+#left-panel {
+  position: sticky;
+  top: 16px;
+  align-self: flex-start;
+}
 .status-ok { color: #0f766e; font-weight: 700; }
 .status-run { color: #1d4ed8; font-weight: 700; }
 .status-err { color: #b91c1c; font-weight: 700; }
+@media (max-width: 980px) {
+  #left-panel { position: static; }
+}
 """
 
 
-def _parse_assignments(values: list[str]) -> list[str]:
-    return [LEFT_LABEL_TO_SLOT[value] for value in (values or []) if value in LEFT_LABEL_TO_SLOT]
+def _parse_assignments(values: list[str] | None) -> list[str]:
+    return [LEFT_LABEL_TO_SLOT[v] for v in (values or []) if v in LEFT_LABEL_TO_SLOT]
 
 
 def _make_tool_rows(
@@ -97,7 +102,7 @@ def _make_tool_rows(
     ]
 
 
-def _build_architecture_preview(main_agent: AgentProfile, sub_agents: list[AgentProfile], tools: list[ToolConfig]) -> str:
+def _architecture_preview(main_agent: AgentProfile, sub_agents: list[AgentProfile], tools: list[ToolConfig]) -> str:
     lines = [
         "### Agent Architecture",
         f"- **Main Agent:** {main_agent.name} ({main_agent.role})",
@@ -117,20 +122,68 @@ def _build_architecture_preview(main_agent: AgentProfile, sub_agents: list[Agent
     return "\n".join(lines)
 
 
-def _format_live_trace(steps: list[str]) -> str:
+def _trace_md(steps: list[str]) -> str:
     lines = ["### Execution Trace"]
     if not steps:
         lines.append("- Waiting for workflow start.")
-        return "\n".join(lines)
-    for idx, step in enumerate(steps, start=1):
-        lines.append(f"{idx}. {step}")
+    else:
+        for idx, step in enumerate(steps, start=1):
+            lines.append(f"{idx}. {step}")
     return "\n".join(lines)
 
 
-def _error_outputs(message: str) -> tuple[str, str, str, str, str, str]:
-    status = f'<span class="status-err">{message}</span>'
+def _live_status_md(steps: list[str]) -> str:
+    lines = ["### Live Status", f"- Steps completed: **{len(steps)}**"]
+    if steps:
+        lines.append(f"- Latest update: **{steps[-1]}**")
+    else:
+        lines.append("- Latest update: waiting...")
+    if steps:
+        lines.append("")
+        lines.append("#### Recent updates")
+        for item in steps[-6:]:
+            lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
+def _clean_markdown(text: str) -> str:
+    """Normalize markdown from model output for cleaner rendering."""
+    raw = (text or "").replace("\r\n", "\n").strip()
+    if not raw:
+        return "-"
+
+    fixed: list[str] = []
+    for line in raw.split("\n"):
+        current = line.rstrip()
+        stripped = current.strip()
+
+        if stripped in {"---", "***", "___"}:
+            continue
+
+        current = re.sub(r"^(#{1,6})(\S)", r"\1 \2", current)
+
+        if stripped.startswith("* ") and " * " in stripped:
+            for part in stripped.split(" * "):
+                part = part.strip()
+                if not part:
+                    continue
+                if not part.startswith("*"):
+                    fixed.append(f"* {part}")
+                else:
+                    fixed.append(part)
+            continue
+
+        fixed.append(current)
+
+    cleaned = "\n".join(fixed)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip() or "-"
+
+
+def _error_outputs(message: str) -> tuple[str, str, str, str, str, str, str]:
     return (
-        status,
+        f'<span class="status-err">{message}</span>',
+        "### Live Status\n- Workflow failed before start.",
         "### Agent Architecture\n-",
         "### Agent Plan\n-",
         "### Execution Trace\n-",
@@ -145,6 +198,7 @@ def run_orchestration_stream(
     main_name: str,
     main_role: str,
     main_instruction: str,
+    task: str,
     sub1_enabled: bool,
     sub1_name: str,
     sub1_spec: str,
@@ -172,9 +226,8 @@ def run_orchestration_stream(
     tool5_enabled: bool,
     tool5_name: str,
     tool5_assigned: list[str],
-    task: str,
 ):
-    """Stream workflow progress and outputs."""
+    """Stream workflow progress and outputs in real time."""
     key = (api_key or "").strip()
     user_task = (task or "").strip()
     if not key:
@@ -212,17 +265,15 @@ def run_orchestration_stream(
         tool5_assigned,
     )
     tools = create_tools(tool_rows, valid_slots)
+    architecture_preview = _architecture_preview(main_agent, sub_agents, tools)
 
-    architecture_preview = _build_architecture_preview(main_agent, sub_agents, tools)
     live_steps: list[str] = []
-    trace_md = _format_live_trace(live_steps)
-    waiting = "### Pending\n- Waiting for completion."
-
     yield (
         '<span class="status-run">Starting workflow...</span>',
+        _live_status_md(live_steps),
         architecture_preview,
-        waiting,
-        trace_md,
+        "### Agent Plan\n- Planning in progress...",
+        _trace_md(live_steps),
         "### Sources Used\n- Running...",
         "### Final Answer\n- Running...",
     )
@@ -263,12 +314,12 @@ def run_orchestration_stream(
 
         if kind == "step":
             live_steps.append(payload)
-            trace_md = _format_live_trace(live_steps)
             yield (
                 f'<span class="status-run">Running: {payload}</span>',
+                _live_status_md(live_steps),
                 architecture_preview,
-                waiting,
-                trace_md,
+                "### Agent Plan\n- Planning/execution in progress...",
+                _trace_md(live_steps),
                 "### Sources Used\n- Running...",
                 "### Final Answer\n- Running...",
             )
@@ -276,12 +327,12 @@ def run_orchestration_stream(
             done = True
 
     if "value" in error_ref:
-        trace_md = _format_live_trace(live_steps)
         yield (
             f'<span class="status-err">Workflow failed: {error_ref["value"]}</span>',
+            _live_status_md(live_steps),
             architecture_preview,
-            waiting,
-            trace_md,
+            "### Agent Plan\n- Could not complete planning.",
+            _trace_md(live_steps),
             "### Sources Used\n- No sources captured.",
             "### Final Answer\n- No final answer generated.",
         )
@@ -290,11 +341,12 @@ def run_orchestration_stream(
     result = result_ref["value"]
     yield (
         '<span class="status-ok">Workflow completed successfully.</span>',
-        result.architecture_summary,
-        result.agent_plan,
-        result.execution_trace,
-        result.sources_used,
-        result.final_answer,
+        _live_status_md(live_steps),
+        _clean_markdown(result.architecture_summary),
+        _clean_markdown(result.agent_plan),
+        _clean_markdown(result.execution_trace),
+        _clean_markdown(result.sources_used),
+        _clean_markdown(result.final_answer),
     )
 
 
@@ -304,109 +356,109 @@ def build_demo() -> gr.Blocks:
         with gr.Column(elem_classes="mao-shell"):
             gr.Markdown(f"# {APP_TITLE}\n{APP_DESCRIPTION}")
 
-            # Row 1: four agent cards (responsive).
-            with gr.Row(elem_id="agent-row"):
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### Main Agent")
-                    main_name = gr.Textbox(label="Name", value="Coordinator")
-                    main_role = gr.Textbox(label="Role", value="Task planner")
-                    main_instruction = gr.Textbox(
-                        label="Instruction",
-                        lines=4,
-                        value="Break tasks into subtasks and delegate them to the best sub-agent.",
-                    )
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1, min_width=420, elem_classes="mao-panel", elem_id="left-panel"):
+                    with gr.Tabs():
+                        with gr.Tab("Workflow"):
+                            with gr.Accordion("LLM Configuration", open=True):
+                                api_key = gr.Textbox(label="Gemini API Key", type="password", placeholder="Paste API key")
+                                model = gr.Dropdown(label="Model", choices=[MODEL_ID], value=MODEL_ID, interactive=False)
 
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### Sub-agent 1")
-                    sub1_enabled = gr.Checkbox(label="Enable", value=True)
-                    sub1_name = gr.Textbox(label="Name", value="Researcher")
-                    sub1_spec = gr.Textbox(label="Specialization", value="information gathering")
-                    sub1_instruction = gr.Textbox(
-                        label="Instruction",
-                        lines=3,
-                        value="Search and summarize factual information.",
-                    )
+                            with gr.Accordion("Main Agent", open=True):
+                                main_name = gr.Textbox(label="Agent Name", value="Coordinator")
+                                main_role = gr.Textbox(label="Agent Role", value="Task planner")
+                                main_instruction = gr.Textbox(
+                                    label="Agent Instruction",
+                                    lines=3,
+                                    value="Break tasks into subtasks and delegate them to the best sub-agent.",
+                                )
 
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### Sub-agent 2")
-                    sub2_enabled = gr.Checkbox(label="Enable", value=True)
-                    sub2_name = gr.Textbox(label="Name", value="Writer")
-                    sub2_spec = gr.Textbox(label="Specialization", value="writing and synthesis")
-                    sub2_instruction = gr.Textbox(
-                        label="Instruction",
-                        lines=3,
-                        value="Draft clear and structured responses from findings.",
-                    )
+                            with gr.Accordion("Task", open=True):
+                                task = gr.Textbox(
+                                    label="Task Input",
+                                    lines=6,
+                                    placeholder="Example: Explain the EU AI Act and its impact on startups.",
+                                )
+                                gr.Examples(examples=[[item] for item in EXAMPLE_TASKS], inputs=[task], label="Example Tasks")
 
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### Sub-agent 3")
-                    sub3_enabled = gr.Checkbox(label="Enable", value=False)
-                    sub3_name = gr.Textbox(label="Name", value="Critic")
-                    sub3_spec = gr.Textbox(label="Specialization", value="quality review")
-                    sub3_instruction = gr.Textbox(
-                        label="Instruction",
-                        lines=3,
-                        value="Review responses for clarity, accuracy, and completeness.",
-                    )
+                            run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
 
-            # Row 2: tools + runtime config + task.
-            slot_labels = [label for label, _ in AGENT_SLOT_CHOICES]
-            with gr.Row(elem_id="config-row"):
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### Tools")
-                    with gr.Accordion(AVAILABLE_TOOLS[0]["name"], open=False):
-                        tool1_enabled = gr.Checkbox(label="Enable", value=True)
-                        tool1_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[0]["name"])
-                        tool1_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 1"])
-                    with gr.Accordion(AVAILABLE_TOOLS[1]["name"], open=False):
-                        tool2_enabled = gr.Checkbox(label="Enable", value=True)
-                        tool2_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[1]["name"])
-                        tool2_assigned = gr.CheckboxGroup(
-                            label="Assign To",
-                            choices=slot_labels,
-                            value=["Sub-agent 1", "Sub-agent 2"],
-                        )
-                    with gr.Accordion(AVAILABLE_TOOLS[2]["name"], open=False):
-                        tool3_enabled = gr.Checkbox(label="Enable", value=False)
-                        tool3_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[2]["name"])
-                        tool3_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
-                    with gr.Accordion(AVAILABLE_TOOLS[3]["name"], open=False):
-                        tool4_enabled = gr.Checkbox(label="Enable", value=False)
-                        tool4_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[3]["name"])
-                        tool4_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
-                    with gr.Accordion(AVAILABLE_TOOLS[4]["name"], open=False):
-                        tool5_enabled = gr.Checkbox(label="Enable", value=False)
-                        tool5_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[4]["name"])
-                        tool5_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Main Agent"])
+                        with gr.Tab("Sub-Agents"):
+                            with gr.Accordion("Sub-agent 1", open=True):
+                                sub1_enabled = gr.Checkbox(label="Enable", value=True)
+                                sub1_name = gr.Textbox(label="Name", value="Researcher")
+                                sub1_spec = gr.Textbox(label="Specialization", value="information gathering")
+                                sub1_instruction = gr.Textbox(
+                                    label="Instruction",
+                                    lines=3,
+                                    value="Search and summarize factual information.",
+                                )
+                            with gr.Accordion("Sub-agent 2", open=False):
+                                sub2_enabled = gr.Checkbox(label="Enable", value=True)
+                                sub2_name = gr.Textbox(label="Name", value="Writer")
+                                sub2_spec = gr.Textbox(label="Specialization", value="writing and synthesis")
+                                sub2_instruction = gr.Textbox(
+                                    label="Instruction",
+                                    lines=3,
+                                    value="Draft clear and structured responses from findings.",
+                                )
+                            with gr.Accordion("Sub-agent 3", open=False):
+                                sub3_enabled = gr.Checkbox(label="Enable", value=False)
+                                sub3_name = gr.Textbox(label="Name", value="Critic")
+                                sub3_spec = gr.Textbox(label="Specialization", value="quality review")
+                                sub3_instruction = gr.Textbox(
+                                    label="Instruction",
+                                    lines=3,
+                                    value="Review responses for clarity, accuracy, and completeness.",
+                                )
 
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### LLM Configuration")
-                    api_key = gr.Textbox(label="Gemini API Key", type="password", placeholder="Paste API key")
-                    model = gr.Dropdown(label="Model", choices=[MODEL_ID], value=MODEL_ID, interactive=False)
-                    run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
+                        with gr.Tab("Tools"):
+                            slot_labels = [label for label, _ in AGENT_SLOT_CHOICES]
+                            with gr.Accordion(AVAILABLE_TOOLS[0]["name"], open=False):
+                                tool1_enabled = gr.Checkbox(label="Enable", value=True)
+                                tool1_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[0]["name"])
+                                tool1_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 1"])
+                            with gr.Accordion(AVAILABLE_TOOLS[1]["name"], open=False):
+                                tool2_enabled = gr.Checkbox(label="Enable", value=True)
+                                tool2_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[1]["name"])
+                                tool2_assigned = gr.CheckboxGroup(
+                                    label="Assign To",
+                                    choices=slot_labels,
+                                    value=["Sub-agent 1", "Sub-agent 2"],
+                                )
+                            with gr.Accordion(AVAILABLE_TOOLS[2]["name"], open=False):
+                                tool3_enabled = gr.Checkbox(label="Enable", value=False)
+                                tool3_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[2]["name"])
+                                tool3_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
+                            with gr.Accordion(AVAILABLE_TOOLS[3]["name"], open=False):
+                                tool4_enabled = gr.Checkbox(label="Enable", value=False)
+                                tool4_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[3]["name"])
+                                tool4_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Sub-agent 2"])
+                            with gr.Accordion(AVAILABLE_TOOLS[4]["name"], open=False):
+                                tool5_enabled = gr.Checkbox(label="Enable", value=False)
+                                tool5_name = gr.Textbox(label="Tool Name", value=AVAILABLE_TOOLS[4]["name"])
+                                tool5_assigned = gr.CheckboxGroup(label="Assign To", choices=slot_labels, value=["Main Agent"])
 
-                with gr.Column(elem_classes="mao-card"):
-                    gr.Markdown("### Task")
-                    task = gr.Textbox(
-                        label="Task Input",
-                        lines=7,
-                        placeholder="Example: Explain the EU AI Act and its impact on startups.",
-                    )
-                    gr.Examples(examples=[[item] for item in EXAMPLE_TASKS], inputs=[task], label="Example Tasks")
+                with gr.Column(scale=2, min_width=560, elem_classes="mao-panel"):
+                    gr.Markdown("## Results")
+                    status = gr.HTML('<span class="status-run">Idle. Configure workflow and run.</span>')
 
-            # Row 3: execution results.
-            with gr.Column(elem_classes="mao-card"):
-                gr.Markdown("## Execution Results")
-                status = gr.HTML('<span class="status-run">Idle. Configure and run workflow.</span>')
-                trace = gr.Markdown("### Execution Trace\n- Waiting for execution.")
-                with gr.Tabs():
-                    with gr.Tab("Architecture"):
+                    with gr.Accordion("Live Progress", open=True):
+                        live_status = gr.Markdown("### Live Status\n- Waiting for workflow start.")
+
+                    with gr.Accordion("Execution Trace", open=True):
+                        trace = gr.Markdown("### Execution Trace\n- Waiting for execution.")
+
+                    with gr.Accordion("Agent Architecture", open=False):
                         architecture = gr.Markdown("### Agent Architecture\n-")
-                    with gr.Tab("Plan"):
+
+                    with gr.Accordion("Agent Plan", open=False):
                         plan = gr.Markdown("### Agent Plan\n-")
-                    with gr.Tab("Sources"):
+
+                    with gr.Accordion("Sources Used", open=False):
                         sources = gr.Markdown("### Sources Used\n-")
-                    with gr.Tab("Final Answer"):
+
+                    with gr.Accordion("Final Answer", open=True):
                         final_answer = gr.Markdown("### Final Answer\n-")
 
             run_button.click(
@@ -417,6 +469,7 @@ def build_demo() -> gr.Blocks:
                     main_name,
                     main_role,
                     main_instruction,
+                    task,
                     sub1_enabled,
                     sub1_name,
                     sub1_spec,
@@ -444,9 +497,8 @@ def build_demo() -> gr.Blocks:
                     tool5_enabled,
                     tool5_name,
                     tool5_assigned,
-                    task,
                 ],
-                outputs=[status, architecture, plan, trace, sources, final_answer],
+                outputs=[status, live_status, architecture, plan, trace, sources, final_answer],
             )
 
     return demo
@@ -455,4 +507,9 @@ def build_demo() -> gr.Blocks:
 if __name__ == "__main__":
     server_name = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")
     server_port = int(os.getenv("PORT", os.getenv("GRADIO_SERVER_PORT", "7862")))
-    build_demo().queue().launch(server_name=server_name, server_port=server_port, css=APP_CSS)
+    build_demo().queue().launch(
+        server_name=server_name,
+        server_port=server_port,
+        theme=gr.themes.Default(),
+        css=APP_CSS,
+    )

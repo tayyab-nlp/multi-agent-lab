@@ -33,7 +33,7 @@ class GeminiClient:
                     HumanMessage(content=user_prompt),
                 ]
             )
-            text = response.content if response else ""
+            text = self._content_to_text(response.content if response else "")
         except Exception as exc:  # pylint: disable=broad-except
             raise RuntimeError(f"Gemini generation failed: {exc}") from exc
 
@@ -41,6 +41,33 @@ class GeminiClient:
         if not output:
             raise RuntimeError("Gemini returned an empty response.")
         return output
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        """Normalize LangChain response content to plain text."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    chunks.append(item)
+                elif isinstance(item, dict):
+                    # Gemini-style block can include {"type":"text","text":"..."}
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                    else:
+                        chunks.append(str(item))
+                else:
+                    chunks.append(str(item))
+            return "\n".join(chunks).strip()
+        if isinstance(content, dict):
+            text = content.get("text")
+            return text if isinstance(text, str) else str(content)
+        return str(content)
 
     def generate_json(self, system_instruction: str, user_prompt: str) -> dict[str, Any]:
         """Generate and parse JSON response with fallback extraction."""

@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
-def _clean(value: str, fallback: str) -> str:
-    text = (value or "").strip()
+def _clean(value: Any, fallback: str) -> str:
+    """Normalize free-form UI values into safe plain text."""
+    if value is None:
+        return fallback
+    if isinstance(value, list):
+        text = "\n".join(str(item) for item in value if item is not None).strip()
+    elif isinstance(value, dict):
+        text = str(value).strip()
+    else:
+        text = str(value).strip()
     return text if text else fallback
 
 

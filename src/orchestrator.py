@@ -248,6 +248,8 @@ def run_workflow(
         "- Short heading\n"
         "- Core answer\n"
         "- Actionable bullets (if useful)\n"
+        "- Put each bullet on its own line using '- '\n"
+        "- Avoid horizontal rules like '---'\n"
         "- Keep it readable and concise."
     )
     final_answer = client.generate_text(synthesis_system, synthesis_user)
