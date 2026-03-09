@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from src.agent_builder import AgentProfile
 from src.config import MAX_SUBTASKS
@@ -25,11 +25,13 @@ class WorkflowResult:
     final_answer: str
 
 
-def _agent_lookup(main_agent: AgentProfile, sub_agents: list[AgentProfile]) -> dict[str, AgentProfile]:
-    lookup = {main_agent.agent_id: main_agent}
-    for agent in sub_agents:
-        lookup[agent.agent_id] = agent
-    return lookup
+ProgressCallback = Callable[[str], None]
+
+
+def _emit(trace_steps: list[str], message: str, callback: ProgressCallback | None) -> None:
+    trace_steps.append(message)
+    if callback:
+        callback(message)
 
 
 def _resolve_assignee(raw_name: str, main_agent: AgentProfile, sub_agents: list[AgentProfile]) -> AgentProfile:
@@ -153,6 +155,7 @@ def run_workflow(
     sub_agents: list[AgentProfile],
     tools: list[ToolConfig],
     task: str,
+    progress_callback: ProgressCallback | None = None,
 ) -> WorkflowResult:
     """Execute complete multi-agent workflow."""
     client = GeminiClient(api_key=api_key, model_id=model_id)
@@ -161,7 +164,7 @@ def run_workflow(
     subtask_outputs: list[dict[str, str]] = []
 
     architecture = _format_architecture(main_agent, sub_agents, tools)
-    trace.append(f"{main_agent.name} received task.")
+    _emit(trace, f"{main_agent.name} received task.", progress_callback)
 
     planning_system = (
         f"You are {main_agent.name}, role: {main_agent.role}. "
@@ -190,27 +193,27 @@ def run_workflow(
         plan = client.generate_json(planning_system, planning_user)
     except Exception:  # pylint: disable=broad-except
         plan = _fallback_plan(main_agent, sub_agents, task)
-        trace.append("Planner JSON parse failed; fallback planning used.")
+        _emit(trace, "Planner JSON parse failed; fallback planning used.", progress_callback)
     else:
-        trace.append("Main agent created plan and subtasks.")
+        _emit(trace, "Main agent created plan and subtasks.", progress_callback)
 
     subtasks = plan.get("subtasks", [])[:MAX_SUBTASKS]
     if not subtasks:
         plan = _fallback_plan(main_agent, sub_agents, task)
         subtasks = plan["subtasks"]
-        trace.append("No subtasks returned; fallback subtask created.")
+        _emit(trace, "No subtasks returned; fallback subtask created.", progress_callback)
 
     for item in subtasks:
         title = item.get("title", "Untitled subtask")
         assignee = _resolve_assignee(item.get("assigned_agent", ""), main_agent, sub_agents)
-        trace.append(f"Delegated '{title}' to {assignee.name}.")
+        _emit(trace, f"Delegated '{title}' to {assignee.name}.", progress_callback)
 
         assigned_tools = [tool for tool in tools if assignee.agent_id in tool.assigned_agent_ids]
         tool_context_parts: list[str] = []
         if assigned_tools:
             for tool in assigned_tools:
                 tool_result = _run_tool(tool, title, task)
-                trace.append(f"{assignee.name} used tool: {tool.name}.")
+                _emit(trace, f"{assignee.name} used tool: {tool.name}.", progress_callback)
                 tool_context_parts.append(f"[{tool.name}]\n{tool_result.output}")
                 for src in tool_result.sources:
                     if src not in collected_sources:
@@ -231,7 +234,7 @@ def run_workflow(
 
         result_text = client.generate_text(agent_system, agent_user)
         subtask_outputs.append({"agent": assignee.name, "subtask": title, "result": result_text})
-        trace.append(f"{assignee.name} completed subtask.")
+        _emit(trace, f"{assignee.name} completed subtask.", progress_callback)
 
     synthesis_system = (
         f"You are {main_agent.name}. Role: {main_agent.role}. "
@@ -248,7 +251,7 @@ def run_workflow(
         "- Keep it readable and concise."
     )
     final_answer = client.generate_text(synthesis_system, synthesis_user)
-    trace.append("Main agent generated final synthesis.")
+    _emit(trace, "Main agent generated final synthesis.", progress_callback)
 
     if collected_sources:
         source_lines = ["### Sources Used"] + [f"- {src}" for src in collected_sources]

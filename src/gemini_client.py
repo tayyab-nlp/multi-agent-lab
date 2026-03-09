@@ -6,8 +6,7 @@ import json
 import re
 from typing import Any
 
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
@@ -28,14 +27,13 @@ class GeminiClient:
     def generate_text(self, system_instruction: str, user_prompt: str) -> str:
         """Generate plain text response."""
         try:
-            prompt = ChatPromptTemplate.from_messages(
+            response = self._llm.invoke(
                 [
-                    ("system", system_instruction),
-                    ("human", user_prompt),
+                    SystemMessage(content=system_instruction),
+                    HumanMessage(content=user_prompt),
                 ]
             )
-            chain = prompt | self._llm | StrOutputParser()
-            text = chain.invoke({})
+            text = response.content if response else ""
         except Exception as exc:  # pylint: disable=broad-except
             raise RuntimeError(f"Gemini generation failed: {exc}") from exc
 
