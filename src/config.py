@@ -7,6 +7,11 @@ APP_DESCRIPTION = (
 )
 
 MODEL_ID = "gemini-3.1-flash-lite-preview"
+MODEL_OPTIONS = [
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+]
 MAX_SUBAGENTS = 3
 MAX_SUBTASKS = 6
 
