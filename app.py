@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import threading
+import json
 from typing import Any
 
 import gradio as gr
@@ -35,6 +36,22 @@ TAB_FINAL = "final"
 
 APP_CSS = """
 body, .gradio-container { background: #ffffff !important; }
+:root, .gradio-container {
+  --body-background-fill: #ffffff !important;
+  --block-background-fill: #ffffff !important;
+  --block-background-fill-dark: #ffffff !important;
+  --background-fill-primary: #ffffff !important;
+  --background-fill-secondary: #ffffff !important;
+  --panel-background-fill: #ffffff !important;
+  --color-accent-soft: #ffffff !important;
+  --input-background-fill: #ffffff !important;
+  --input-background-fill-focus: #ffffff !important;
+}
+.gradio-container .main,
+.gradio-container .wrap,
+.gradio-container .contain {
+  background: #ffffff !important;
+}
 .mao-shell { max-width: 1400px; margin: 0 auto; }
 .mao-panel {
   border: 1px solid #dbe4f0;
@@ -68,33 +85,64 @@ body, .gradio-container { background: #ffffff !important; }
   background: #ffffff;
   padding: 10px;
 }
-.left-tab-body .prose,
-.left-tab-body .prose p,
-.left-tab-body .prose li,
-.left-tab-body .markdown {
+#left-panel .prose,
+#left-panel .prose p,
+#left-panel .prose li,
+#left-panel .markdown {
   background: transparent !important;
 }
-.left-tab-body .examples,
-.left-tab-body .examples .table-wrap,
-.left-tab-body .examples table,
-.left-tab-body .examples table tr,
-.left-tab-body .examples table td,
-.left-tab-body .examples table th {
+#left-panel .block,
+#left-panel .gr-group,
+#left-panel .styler,
+#left-panel .form {
+  background: #ffffff !important;
+  border-color: #dbe4f0 !important;
+  box-shadow: none !important;
+}
+#left-panel .block {
+  border-width: 1px !important;
+}
+#left-panel .examples,
+#left-panel .examples .table-wrap,
+#left-panel .examples table,
+#left-panel .examples table tr,
+#left-panel .examples table td,
+#left-panel .examples table th {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
 }
-.left-tab-body .examples {
+#left-panel .gallery,
+#left-panel .gallery-item,
+#left-panel [class*="gallery"] {
+  background: #ffffff !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+#left-panel .examples {
   padding: 0 !important;
 }
-.left-tab-body details,
-.left-tab-body .accordion {
+.example-task-btn {
+  justify-content: flex-start !important;
+  text-align: left !important;
+  border: 1px solid #dbe4f0 !important;
+  background: #ffffff !important;
+}
+.example-task-btn button,
+#left-panel .example-task-btn button {
+  background: #ffffff !important;
+  border: 1px solid #dbe4f0 !important;
+  box-shadow: none !important;
+  color: #111827 !important;
+}
+#left-panel details,
+#left-panel .accordion {
   border: 1px solid #dbe4f0 !important;
   box-shadow: none !important;
   outline: none !important;
 }
-.left-tab-body details > summary,
-.left-tab-body .accordion summary {
+#left-panel details > summary,
+#left-panel .accordion summary {
   border-bottom: 1px solid #e2e8f0 !important;
 }
 .status-ok { color: #0f766e; font-weight: 700; }
@@ -231,6 +279,26 @@ def _drop_title_line(text: str) -> str:
 def _clean_markdown(text: str) -> str:
     """Normalize markdown from model output for cleaner rendering."""
     raw = _drop_title_line((text or "").replace("\r\n", "\n")).strip()
+    if raw.startswith("```") and raw.endswith("```"):
+        lines = raw.split("\n")
+        if len(lines) >= 2:
+            lines = lines[1:-1]
+            if lines and lines[0].strip().lower() == "markdown":
+                lines = lines[1:]
+            raw = "\n".join(lines).strip()
+
+    if raw and ((raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'"))):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, str):
+                raw = parsed.strip()
+        except Exception:  # pylint: disable=broad-except
+            raw = raw[1:-1].strip()
+
+    raw = raw.replace("\\n", "\n").replace("\\t", "\t")
+    raw = re.sub(r'^"+', "", raw)
+    raw = re.sub(r'"+$', "", raw)
+
     if not raw:
         return "-"
 
@@ -275,8 +343,14 @@ def _clean_markdown(text: str) -> str:
         padded.append(line)
 
     cleaned = "\n".join(padded)
+    cleaned = re.sub(r"([.!?])\s+(#{1,6}\s)", r"\1\n\n\2", cleaned)
     cleaned = re.sub(r"([.!?])\s+\*\s+", r"\1\n* ", cleaned)
+    cleaned = re.sub(r"(?m)^-\s{2,}", "- ", cleaned)
     cleaned = re.sub(r"\n[-*]\s+\*\*", "\n* **", cleaned)
+    cleaned = re.sub(r'(?m)^\s*"+\s*(#{1,6}\s)', r"\1", cleaned)
+    cleaned = re.sub(r'(?m)^\s*"+\s*[-*]\s+', "* ", cleaned)
+    cleaned = re.sub(r'(?m)\s*"+\s*$', "", cleaned)
+    cleaned = re.sub(r"(?m)^(#{1,6}\s.+)$", r"\n\1\n", cleaned)
     cleaned = re.sub(r"\s+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip() or "-"
@@ -529,7 +603,10 @@ def build_demo() -> gr.Blocks:
                                     lines=6,
                                     placeholder="Example: Explain the EU AI Act and its impact on startups.",
                                 )
-                                gr.Examples(examples=[[item] for item in EXAMPLE_TASKS], inputs=[task], label="Example Tasks")
+                                gr.Markdown("Example Tasks")
+                                example_btn_1 = gr.Button(EXAMPLE_TASKS[0], elem_classes=["example-task-btn"])
+                                example_btn_2 = gr.Button(EXAMPLE_TASKS[1], elem_classes=["example-task-btn"])
+                                example_btn_3 = gr.Button(EXAMPLE_TASKS[2], elem_classes=["example-task-btn"])
                                 run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
 
                         with gr.Tab("Main"):
@@ -697,6 +774,9 @@ def build_demo() -> gr.Blocks:
                     final_answer,
                 ],
             )
+            example_btn_1.click(fn=lambda: EXAMPLE_TASKS[0], outputs=task)
+            example_btn_2.click(fn=lambda: EXAMPLE_TASKS[1], outputs=task)
+            example_btn_3.click(fn=lambda: EXAMPLE_TASKS[2], outputs=task)
 
     return demo
 
