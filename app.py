@@ -609,7 +609,7 @@ def build_demo() -> gr.Blocks:
                                 example_btn_3 = gr.Button(EXAMPLE_TASKS[2], elem_classes=["example-task-btn"])
                                 run_button = gr.Button("Run Multi-Agent Workflow", variant="primary")
 
-                        with gr.Tab("Main"):
+                        with gr.Tab("Agent"):
                             with gr.Group(elem_classes=["left-tab-body"]):
                                 main_name = gr.Textbox(label="Agent Name", value="Coordinator")
                                 main_role = gr.Textbox(label="Agent Role", value="Task planner")
