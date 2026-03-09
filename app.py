@@ -405,6 +405,7 @@ def _error_outputs(message: str) -> tuple[Any, ...]:
         "-",
         "-",
         "-",
+        "",
     )
 
 
@@ -496,6 +497,7 @@ def run_orchestration_stream(
         "Running...",
         architecture_preview,
         "Running...",
+        "",
     )
 
     events: queue.Queue = queue.Queue()
@@ -546,6 +548,7 @@ def run_orchestration_stream(
                 "Running...",
                 architecture_preview,
                 "Running...",
+                "",
             )
         elif kind == "done":
             done = True
@@ -563,10 +566,12 @@ def run_orchestration_stream(
             "No sources captured.",
             architecture_preview,
             "No final answer generated.",
+            "",
         )
         return
 
     result = result_ref["value"]
+    final_answer_clean = _clean_markdown(result.final_answer)
     yield (
         '<span class="status-ok">Workflow completed successfully.</span>',
         gr.Tabs(selected=TAB_FINAL),
@@ -578,7 +583,8 @@ def run_orchestration_stream(
         _agent_slot_md(result.agent_io, sub3_enabled, sub3_name, "Sub-agent 3"),
         _clean_markdown(result.sources_used),
         _clean_markdown(result.architecture_summary),
-        _clean_markdown(result.final_answer),
+        final_answer_clean,
+        final_answer_clean,
     )
 
 
@@ -722,6 +728,13 @@ def build_demo() -> gr.Blocks:
                             architecture = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
                         with gr.Tab("Final Answer", id=TAB_FINAL):
                             final_answer = gr.Markdown("-", elem_classes=["results-pane", "result-markdown"])
+                            copy_final_btn = gr.Button("Copy Final Answer", variant="secondary")
+                            copy_status = gr.Markdown("", elem_classes=["results-pane"])
+                            final_answer_copy = gr.Textbox(
+                                label="Copy-ready Final Answer",
+                                lines=6,
+                                interactive=False,
+                            )
 
             run_button.click(
                 fn=run_orchestration_stream,
@@ -772,7 +785,20 @@ def build_demo() -> gr.Blocks:
                     sources,
                     architecture,
                     final_answer,
+                    final_answer_copy,
                 ],
+            )
+            copy_final_btn.click(
+                fn=lambda text: "Copied final answer." if (text or "").strip() else "No final answer to copy yet.",
+                inputs=final_answer_copy,
+                outputs=copy_status,
+                js="""
+                (text) => {
+                  if (!text || !text.trim()) { return "No final answer to copy yet."; }
+                  navigator.clipboard.writeText(text);
+                  return "Copied final answer.";
+                }
+                """,
             )
             example_btn_1.click(fn=lambda: EXAMPLE_TASKS[0], outputs=task)
             example_btn_2.click(fn=lambda: EXAMPLE_TASKS[1], outputs=task)
