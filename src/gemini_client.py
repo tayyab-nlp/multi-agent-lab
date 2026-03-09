@@ -1,0 +1,67 @@
+"""Gemini + LangChain client wrapper."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+
+class GeminiClient:
+    """Lightweight text generation client with consistent prompts."""
+
+    def __init__(self, api_key: str, model_id: str):
+        key = (api_key or "").strip()
+        if not key:
+            raise ValueError("Gemini API key is required.")
+
+        self._llm = ChatGoogleGenerativeAI(
+            model=model_id,
+            google_api_key=key,
+            temperature=0.2,
+        )
+
+    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+        """Generate plain text response."""
+        try:
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", system_instruction),
+                    ("human", user_prompt),
+                ]
+            )
+            chain = prompt | self._llm | StrOutputParser()
+            text = chain.invoke({})
+        except Exception as exc:  # pylint: disable=broad-except
+            raise RuntimeError(f"Gemini generation failed: {exc}") from exc
+
+        output = (text or "").strip()
+        if not output:
+            raise RuntimeError("Gemini returned an empty response.")
+        return output
+
+    def generate_json(self, system_instruction: str, user_prompt: str) -> dict[str, Any]:
+        """Generate and parse JSON response with fallback extraction."""
+        raw = self.generate_text(system_instruction=system_instruction, user_prompt=user_prompt)
+        block = self._extract_json_block(raw)
+        try:
+            return json.loads(block)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Gemini returned invalid JSON: {exc}") from exc
+
+    @staticmethod
+    def _extract_json_block(text: str) -> str:
+        # Accept fenced JSON or raw JSON.
+        cleaned = text.strip()
+        fence_match = re.search(r"```json\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+        if fence_match:
+            return fence_match.group(1).strip()
+
+        obj_match = re.search(r"(\{.*\})", cleaned, flags=re.DOTALL)
+        if obj_match:
+            return obj_match.group(1).strip()
+        return cleaned
