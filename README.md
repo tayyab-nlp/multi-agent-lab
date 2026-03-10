@@ -2,7 +2,7 @@
 
 ## Live demo
 
-[[Open Live Demo ](https://vtayyab6-multi-agent-orchestrator.hf.space/)]([https://vtayyab6-multi-agent-orchestrator.hf.space/?__theme=light](https://vtayyab6-multi-agent-orchestrator.hf.space/))
+[https://vtayyab6-multi-agent-orchestrator.hf.space/?__theme=light](https://vtayyab6-multi-agent-orchestrator.hf.space/?__theme=light)
 
 A Gradio application to configure a coordinator, sub-agents, and safe tools, then run a visible multi-agent workflow on Gemini with live progress, plan, execution trace, and final synthesized answer.
 
