@@ -1,17 +1,8 @@
----
-title: Multi-Agent Orchestrator for LLM Workflows
-sdk: gradio
-app_file: app.py
-pinned: false
----
-
 # Multi-Agent Orchestrator for LLM Workflows
 
-## Demo Link (Hugging Face Live)
+## Live demo
 
-[Open Live Demo (Light Theme)](https://vtayyab6-multi-agent-orchestrator.hf.space/?__theme=light)
-
-## Short Description
+[[Open Live Demo ](https://vtayyab6-multi-agent-orchestrator.hf.space/)]([https://vtayyab6-multi-agent-orchestrator.hf.space/?__theme=light](https://vtayyab6-multi-agent-orchestrator.hf.space/))
 
 A Gradio application to configure a coordinator, sub-agents, and safe tools, then run a visible multi-agent workflow on Gemini with live progress, plan, execution trace, and final synthesized answer.
 
